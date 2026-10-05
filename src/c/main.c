@@ -33,8 +33,6 @@ static AppTimer *s_timer;
 static GBitmap *s_boat_bitmap;
 static GBitmap *s_anchor_bitmap;
 static GBitmap *s_mine_bitmap;
-static GBitmap *s_sun_bitmap;
-static GBitmap *s_cloud_bitmap;
 static GBitmap *s_island_bitmap;
 
 static Particle s_particles[MAX_PARTICLES];
@@ -42,6 +40,13 @@ static Particle s_particles[MAX_PARTICLES];
 static GameState s_state = GAME_STATE_COUNTDOWN;
 static int s_countdown_timer = 90; 
 static uint32_t s_tick = 0;        
+
+#define PERSIST_KEY_BACKLIGHT 1002
+static bool s_backlight_always_on = false;
+static Window *s_settings_window;
+static SimpleMenuLayer *s_simple_menu_layer;
+static SimpleMenuSection s_menu_sections[1];
+static SimpleMenuItem s_menu_items[1];
 
 static int s_water_angle = 0; 
 static int s_water_base_y = SCREEN_H / 2;
@@ -103,6 +108,57 @@ static void reset_game(void) {
     }
 }
 
+static void update_backlight_subtitle(void) {
+    s_menu_items[0].subtitle = s_backlight_always_on ? "Always On" : "Default";
+    if (s_simple_menu_layer) {
+        layer_mark_dirty(simple_menu_layer_get_layer(s_simple_menu_layer));
+    }
+}
+
+static void backlight_select_callback(int index, void *ctx) {
+    s_backlight_always_on = !s_backlight_always_on;
+    persist_write_bool(PERSIST_KEY_BACKLIGHT, s_backlight_always_on);
+    light_enable(s_backlight_always_on);
+    update_backlight_subtitle();
+}
+
+static void settings_window_load(Window *window) {
+    s_menu_items[0] = (SimpleMenuItem) {
+        .title = "Backlight",
+        .callback = backlight_select_callback,
+    };
+    update_backlight_subtitle();
+
+    s_menu_sections[0] = (SimpleMenuSection) {
+        .title = "Settings",
+        .num_items = 1,
+        .items = s_menu_items,
+    };
+
+    Layer *window_layer = window_get_root_layer(window);
+    GRect bounds = layer_get_frame(window_layer);
+
+    s_simple_menu_layer = simple_menu_layer_create(bounds, window, s_menu_sections, 1, NULL);
+    layer_add_child(window_layer, simple_menu_layer_get_layer(s_simple_menu_layer));
+}
+
+static void settings_window_unload(Window *window) {
+    simple_menu_layer_destroy(s_simple_menu_layer);
+    window_destroy(window);
+    s_settings_window = NULL;
+}
+
+static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+    if (!s_settings_window) {
+        s_settings_window = window_create();
+        window_set_window_handlers(s_settings_window, (WindowHandlers) {
+            .load = settings_window_load,
+            .unload = settings_window_unload,
+        });
+    }
+    window_stack_push(s_settings_window, true);
+}
+
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     if (s_state == GAME_STATE_GAME_OVER) {
         reset_game();
@@ -112,6 +168,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
 
 static void click_config_provider(void *context) {
     window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
+    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL);
 }
 
 static void spawn_particle(ParticleType type, int x, int y, int vx, int vy, int life) {
@@ -244,9 +301,58 @@ static void game_loop(void *data) {
         }
     }
 
+    // Collision Check
+    if (s_obstacle_x < s_boat_x + 15 && s_obstacle_x > s_boat_x - 15) {
+        if (s_boat_y < s_obstacle_gap_y - 25 || s_boat_y > s_obstacle_gap_y + 25) {
+            if (s_shield_active) {
+                s_shield_active = false;
+                s_obstacle_x = -50;
+                vibes_short_pulse();
+            } else {
+                s_state = GAME_STATE_GAME_OVER;
+                vibes_double_pulse();
+                save_high_score();
+            }
+        }
+    }
 
     layer_mark_dirty(s_canvas_layer);
     s_timer = app_timer_register(1000 / FPS, game_loop, NULL);
+}
+
+static void draw_sun_sprite(GContext *ctx, int x, int y) {
+    graphics_context_set_stroke_width(ctx, 2);
+    graphics_context_set_stroke_color(ctx, GColorBlack);
+    graphics_draw_line(ctx, GPoint(x + 20, y + 2), GPoint(x + 20, y + 38));
+    graphics_draw_line(ctx, GPoint(x + 2, y + 20), GPoint(x + 38, y + 20));
+    graphics_draw_line(ctx, GPoint(x + 7, y + 7), GPoint(x + 33, y + 33));
+    graphics_draw_line(ctx, GPoint(x + 7, y + 33), GPoint(x + 33, y + 7));
+    
+    // Use filled circles for a perfectly even border instead of relying on stroke width
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    graphics_fill_circle(ctx, GPoint(x + 20, y + 20), 12);
+    
+    graphics_context_set_fill_color(ctx, GColorYellow);
+    graphics_fill_circle(ctx, GPoint(x + 20, y + 20), 10);
+}
+
+static void draw_cloud_sprite(GContext *ctx, int x, int y) {
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    graphics_context_set_stroke_color(ctx, GColorBlack);
+    graphics_context_set_stroke_width(ctx, 2);
+    
+    graphics_draw_circle(ctx, GPoint(x + 10, y + 20), 8);
+    graphics_draw_circle(ctx, GPoint(x + 20, y + 13), 10);
+    graphics_draw_circle(ctx, GPoint(x + 33, y + 17), 9);
+    graphics_draw_circle(ctx, GPoint(x + 43, y + 23), 6);
+    
+    graphics_context_set_stroke_width(ctx, 1);
+    graphics_fill_circle(ctx, GPoint(x + 10, y + 20), 7);
+    graphics_fill_circle(ctx, GPoint(x + 20, y + 13), 9);
+    graphics_fill_circle(ctx, GPoint(x + 33, y + 17), 8);
+    graphics_fill_circle(ctx, GPoint(x + 43, y + 23), 5);
+    
+    graphics_fill_rect(ctx, GRect(x + 10, y + 17, 33, 11), 0, GCornerNone);
 }
 
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
@@ -255,10 +361,9 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
     // Living Sky Layer
-    GRect sun_b = gbitmap_get_bounds(s_sun_bitmap);
     int sun_x = 145;
     int sun_y = 10;
-    graphics_draw_bitmap_in_rect(ctx, s_sun_bitmap, GRect(sun_x, sun_y, sun_b.size.w, sun_b.size.h));
+    draw_sun_sprite(ctx, sun_x, sun_y);
 
     int dist_to_hazard = s_obstacle_x > s_boat_x ? s_obstacle_x - s_boat_x : s_boat_x - s_obstacle_x;
     bool is_panicking = (dist_to_hazard < 50 && s_state == GAME_STATE_PLAYING);
@@ -267,8 +372,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     int cx = sun_x + 20; 
     int cy = sun_y + 20;
 
-    graphics_context_set_fill_color(ctx, GColorYellow);
-    graphics_fill_circle(ctx, GPoint(cx, cy + 2), 10);
+
 
     graphics_context_set_stroke_color(ctx, GColorBlack);
     graphics_context_set_fill_color(ctx, GColorBlack);
@@ -292,12 +396,11 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     }
 
     // Clouds Parallax
-    GRect cloud_b = gbitmap_get_bounds(s_cloud_bitmap);
     int c1_pop = abs((sin_lookup((s_tick * 250) % TRIG_MAX_ANGLE) * 5) / TRIG_MAX_RATIO);
-    graphics_draw_bitmap_in_rect(ctx, s_cloud_bitmap, GRect(s_cloud1_x, 25 - c1_pop, cloud_b.size.w, cloud_b.size.h));
+    draw_cloud_sprite(ctx, s_cloud1_x, 25 - c1_pop);
     
     int c2_pop = abs((sin_lookup(((s_tick + 60) * 300) % TRIG_MAX_ANGLE) * 4) / TRIG_MAX_RATIO);
-    graphics_draw_bitmap_in_rect(ctx, s_cloud_bitmap, GRect(s_cloud2_x, 45 - c2_pop, cloud_b.size.w, cloud_b.size.h));
+    draw_cloud_sprite(ctx, s_cloud2_x, 45 - c2_pop);
 
     // --- Lighthouse Island Layer ---
     int bg_angle = (s_water_angle * 7) / 10;
@@ -567,8 +670,6 @@ static void main_window_load(Window *window) {
     s_boat_bitmap   = gbitmap_create_with_resource(RESOURCE_ID_BOAT);
     s_anchor_bitmap = gbitmap_create_with_resource(RESOURCE_ID_ANCHOR);
     s_mine_bitmap   = gbitmap_create_with_resource(RESOURCE_ID_MINE);
-    s_sun_bitmap    = gbitmap_create_with_resource(RESOURCE_ID_SUN);
-    s_cloud_bitmap  = gbitmap_create_with_resource(RESOURCE_ID_CLOUD);
     s_island_bitmap = gbitmap_create_with_resource(RESOURCE_ID_ISLAND);
 
     s_canvas_layer = layer_create(bounds);
@@ -583,13 +684,16 @@ static void main_window_unload(Window *window) {
     gbitmap_destroy(s_boat_bitmap);
     gbitmap_destroy(s_anchor_bitmap);
     gbitmap_destroy(s_mine_bitmap);
-    gbitmap_destroy(s_sun_bitmap);
-    gbitmap_destroy(s_cloud_bitmap);
     gbitmap_destroy(s_island_bitmap);
     layer_destroy(s_canvas_layer);
 }
 
 static void init(void) {
+    if (persist_exists(PERSIST_KEY_BACKLIGHT)) {
+        s_backlight_always_on = persist_read_bool(PERSIST_KEY_BACKLIGHT);
+        light_enable(s_backlight_always_on);
+    }
+
     s_main_window = window_create();
     window_set_click_config_provider(s_main_window, click_config_provider);
     window_set_window_handlers(s_main_window, (WindowHandlers) {
