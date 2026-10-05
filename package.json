@@ -1,0 +1,54 @@
+{
+  "name": "Point_Nemo",
+  "author": "Developer",
+  "version": "1.0.0",
+  "keywords": [],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Point Nemo",
+    "uuid": "20b41113-5a04-4b53-8326-e1f4864149fa",
+    "sdkVersion": "3",
+    "enableMultiJS": false,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "resources": {
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "BOAT",
+          "file": "images/boat.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "ANCHOR",
+          "file": "images/anchor.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "MINE",
+          "file": "images/mine.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "SUN",
+          "file": "images/sun.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "CLOUD",
+          "file": "images/cloud.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "ISLAND",
+          "file": "images/island.png"
+        }
+      ]
+    }
+  }
+}

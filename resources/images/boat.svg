@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30" width="30" height="30">
+  <!-- Smokestack -->
+  <rect x="20" y="3" width="6" height="9" fill="#333333" stroke="#000000" stroke-width="2"/>
+  <rect x="19" y="4" width="8" height="3" fill="#FCE52D" stroke="#000000" stroke-width="1.5"/>
+  <!-- Cabin -->
+  <rect x="9" y="10" width="16" height="12" fill="#FFFFFF" stroke="#000000" stroke-width="2" rx="2"/>
+  <!-- Face/Eyes on Cabin -->
+  <circle cx="14" cy="15" r="1.5" fill="#000000"/>
+  <circle cx="19" cy="15" r="1.5" fill="#000000"/>
+  <path d="M 15 18 Q 16.5 20 18 18" fill="none" stroke="#000000" stroke-width="1.5"/>
+  <!-- Hull -->
+  <path d="M 3 20 L 27 20 C 29 20 29 26 27 26 L 6 26 C 2 26 2 20 3 20 Z" fill="#E02424" stroke="#000000" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Hull Stripe -->
+  <rect x="4" y="21" width="22" height="2" fill="#FFFFFF"/>
+</svg>
