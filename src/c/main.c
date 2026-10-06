@@ -1,17 +1,33 @@
 #include <pebble.h>
 
-#define SCREEN_W 200
-#define SCREEN_H 228
+// Design-space constants (the coordinate system the code was authored in)
+#define DESIGN_W 200
+#define DESIGN_H 228
+
+// Runtime screen dimensions – set once in main_window_load()
+static int SCREEN_W = DESIGN_W;
+static int SCREEN_H = DESIGN_H;
+
+// Scale a design-space X or Y value to the actual screen
+#define SX(v) ((v) * SCREEN_W / DESIGN_W)
+#define SY(v) ((v) * SCREEN_H / DESIGN_H)
+
 #define FPS 30
 #define NUM_WAVE_POINTS 11
 #define MAX_PARTICLES 40
 #define PERSIST_KEY_HIGH_SCORE 1001
 
 typedef enum {
+    GAME_STATE_MENU,
     GAME_STATE_COUNTDOWN,
     GAME_STATE_PLAYING,
     GAME_STATE_GAME_OVER
 } GameState;
+
+typedef enum {
+    CONTROL_TILT,
+    CONTROL_BUTTONS
+} ControlMode;
 
 typedef enum {
     PARTICLE_SPLASH,
@@ -30,14 +46,21 @@ static Window *s_main_window;
 static Layer *s_canvas_layer;
 static AppTimer *s_timer;
 
-static GBitmap *s_boat_bitmap;
-static GBitmap *s_anchor_bitmap;
-static GBitmap *s_mine_bitmap;
-static GBitmap *s_island_bitmap;
+static GBitmap *s_bmp_boat;
+static GBitmap *s_bmp_anchor;
+static GBitmap *s_bmp_mine;
+static GBitmap *s_bmp_sun_normal;
+static GBitmap *s_bmp_sun_cool;
+static GBitmap *s_bmp_sun_surprised;
+static GBitmap *s_bmp_cloud_single;
+static GBitmap *s_bmp_cloud_double;
+static GBitmap *s_bmp_island_coconut;
+static GBitmap *s_bmp_island_lighthouse;
 
 static Particle s_particles[MAX_PARTICLES];
 
-static GameState s_state = GAME_STATE_COUNTDOWN;
+static GameState s_state = GAME_STATE_MENU;
+static ControlMode s_control_mode = CONTROL_TILT;
 static int s_countdown_timer = 90; 
 static uint32_t s_tick = 0;        
 
@@ -49,14 +72,15 @@ static SimpleMenuSection s_menu_sections[1];
 static SimpleMenuItem s_menu_items[1];
 
 static int s_water_angle = 0; 
-static int s_water_base_y = SCREEN_H / 2;
+static int s_water_base_y;
 static int s_wave_phase = 0;
+static int s_water_distance = 0;
 
-static int s_boat_x = SCREEN_W / 2;
-static int s_boat_y = SCREEN_H / 2;
+static int s_boat_x;
+static int s_boat_y;
 
-static int s_obstacle_x = SCREEN_W + 50;
-static int s_obstacle_gap_y = SCREEN_H / 2;
+static int s_obstacle_x;
+static int s_obstacle_gap_y;
 static int s_obstacle_speed = 4;
 
 static bool s_powerup_active = false;
@@ -64,11 +88,12 @@ static int s_powerup_x = -50;
 static int s_powerup_y = 0;
 static bool s_shield_active = false;
 static int s_shield_timer = 0;
+static int s_sun_cool_timer = 0;
 
-static int s_island_x = SCREEN_W + 40;
-static int s_lighthouse_island_x = -120;
-static int s_cloud1_x = 15;
-static int s_cloud2_x = 110;
+static int s_island_x;
+static int s_lighthouse_island_x;
+static int s_cloud1_x;
+static int s_cloud2_x;
 
 static int s_score = 0;
 static int s_high_score = 0;
@@ -91,14 +116,19 @@ static void save_high_score(void) {
 }
 
 static void reset_game(void) {
-    s_state = GAME_STATE_COUNTDOWN;
     s_countdown_timer = 90;
     s_score = 0;
     s_obstacle_speed = 4;
+    s_water_base_y = SCREEN_H / 2;
+    s_water_distance = 0;
     s_boat_x = SCREEN_W / 2;
-    s_obstacle_x = SCREEN_W + 50;
-    s_island_x = SCREEN_W + 40;
-    s_lighthouse_island_x = -120;
+    s_boat_y = SCREEN_H / 2;
+    s_obstacle_x = SCREEN_W + SX(50);
+    s_obstacle_gap_y = SCREEN_H / 2;
+    s_island_x = SCREEN_W + SX(40);
+    s_lighthouse_island_x = SX(-120);
+    s_cloud1_x = SX(15);
+    s_cloud2_x = SX(110);
     s_powerup_active = false;
     s_shield_active = false;
     s_shield_timer = 0;
@@ -148,6 +178,10 @@ static void settings_window_unload(Window *window) {
     s_settings_window = NULL;
 }
 
+static bool s_up_pressed = false;
+static bool s_down_pressed = false;
+static int s_button_angle = 0;
+
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
     if (!s_settings_window) {
         s_settings_window = window_create();
@@ -159,15 +193,45 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
     window_stack_push(s_settings_window, true);
 }
 
+static void up_down_handler(ClickRecognizerRef recognizer, void *context) {
+    if (s_state == GAME_STATE_MENU) {
+        s_control_mode = CONTROL_TILT;
+        reset_game();
+        s_state = GAME_STATE_COUNTDOWN;
+    } else if (s_state == GAME_STATE_PLAYING && s_control_mode == CONTROL_BUTTONS) {
+        s_up_pressed = true;
+    }
+}
+
+static void up_up_handler(ClickRecognizerRef recognizer, void *context) {
+    s_up_pressed = false;
+}
+
+static void down_down_handler(ClickRecognizerRef recognizer, void *context) {
+    if (s_state == GAME_STATE_MENU) {
+        s_control_mode = CONTROL_BUTTONS;
+        s_button_angle = 0;
+        reset_game();
+        s_state = GAME_STATE_COUNTDOWN;
+    } else if (s_state == GAME_STATE_PLAYING && s_control_mode == CONTROL_BUTTONS) {
+        s_down_pressed = true;
+    }
+}
+
+static void down_up_handler(ClickRecognizerRef recognizer, void *context) {
+    s_down_pressed = false;
+}
+
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     if (s_state == GAME_STATE_GAME_OVER) {
-        reset_game();
-        s_timer = app_timer_register(1000 / FPS, game_loop, NULL);
+        s_state = GAME_STATE_MENU;
     }
 }
 
 static void click_config_provider(void *context) {
     window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
+    window_raw_click_subscribe(BUTTON_ID_UP, up_down_handler, up_up_handler, NULL);
+    window_raw_click_subscribe(BUTTON_ID_DOWN, down_down_handler, down_up_handler, NULL);
     window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL);
 }
 
@@ -189,10 +253,44 @@ static void spawn_particle(ParticleType type, int x, int y, int vx, int vy, int 
 static void game_loop(void *data) {
     s_tick++;
 
-    AccelData accel;
-    if (accel_service_peek(&accel) == 0) {
-        int target_angle = accel.x / 15;
-        s_water_angle = (s_water_angle * 3 + target_angle) / 4; 
+    int target_angle = 0;
+    if (s_control_mode == CONTROL_TILT) {
+        AccelData accel;
+        if (accel_service_peek(&accel) == 0) {
+            target_angle = accel.x / 15;
+        }
+    } else {
+        if (s_up_pressed) {
+            s_button_angle -= 4;
+            if (s_button_angle < -60) s_button_angle = -60;
+        } else if (s_down_pressed) {
+            s_button_angle += 4;
+            if (s_button_angle > 60) s_button_angle = 60;
+        } else {
+            if (s_button_angle > 0) s_button_angle -= 4;
+            if (s_button_angle < 0) s_button_angle += 4;
+            if (abs(s_button_angle) < 4) s_button_angle = 0;
+        }
+        target_angle = s_button_angle;
+    }
+    
+    // Smooth angle interpolation
+    s_water_angle = (s_water_angle * 3 + target_angle) / 4; 
+
+    if (s_state == GAME_STATE_MENU) {
+        s_water_angle = (s_water_angle * 3) / 4; // level out over time
+        s_water_base_y = (SCREEN_H / 2) + (s_water_angle * SY(13)) / 10;
+        s_wave_phase = (s_wave_phase + 1000) % TRIG_MAX_ANGLE;
+        
+        // Cloud Parallax (animate slowly in menu)
+        if (s_tick % 5 == 0) s_cloud1_x -= 1;
+        if (s_tick % 3 == 0) s_cloud2_x -= 1;
+        if (s_cloud1_x < SX(-40)) s_cloud1_x = SCREEN_W + SX(10);
+        if (s_cloud2_x < SX(-40)) s_cloud2_x = SCREEN_W + SX(10);
+        
+        layer_mark_dirty(s_canvas_layer);
+        s_timer = app_timer_register(1000 / FPS, game_loop, NULL);
+        return;
     }
 
     if (s_state == GAME_STATE_COUNTDOWN) {
@@ -210,10 +308,10 @@ static void game_loop(void *data) {
 
     if (s_state == GAME_STATE_GAME_OVER) return;
 
-    s_water_base_y = (SCREEN_H / 2) + (s_water_angle * 13) / 10;
+    s_water_base_y = (SCREEN_H / 2) + (s_water_angle * SY(13)) / 10;
     
     int center_wave_angle = (s_wave_phase + (s_boat_x * 300)) % TRIG_MAX_ANGLE;
-    int center_wave_height = (sin_lookup(center_wave_angle) * 4) / TRIG_MAX_RATIO;
+    int center_wave_height = (sin_lookup(center_wave_angle) * SY(4)) / TRIG_MAX_RATIO;
     s_boat_y = s_water_base_y + center_wave_height;
 
     // Splash Particles
@@ -228,7 +326,7 @@ static void game_loop(void *data) {
     // Smoke Particles
     if (s_tick % 6 == 0) {
         int smoke_x = s_boat_x + 5 + (rand() % 3 - 1);
-        int smoke_y = s_boat_y - 20;
+        int smoke_y = s_boat_y - SY(20);
         int smoke_vx = -4 - (rand() % 2);
         int smoke_vy = -2 - (rand() % 2);
         spawn_particle(PARTICLE_SMOKE, smoke_x, smoke_y, smoke_vx, smoke_vy, 16 + (rand() % 8));
@@ -247,36 +345,50 @@ static void game_loop(void *data) {
     // Cloud Parallax
     if (s_tick % 5 == 0) s_cloud1_x -= 1;
     if (s_tick % 3 == 0) s_cloud2_x -= 1;
-    if (s_cloud1_x < -40) s_cloud1_x = SCREEN_W + 10;
-    if (s_cloud2_x < -40) s_cloud2_x = SCREEN_W + 10;
+    if (s_cloud1_x < SX(-40)) s_cloud1_x = SCREEN_W + SX(10);
+    if (s_cloud2_x < SX(-40)) s_cloud2_x = SCREEN_W + SX(10);
 
     // Parallax Islands Depth
     if (s_tick % 2 == 0) {
         s_island_x -= 1; 
         s_lighthouse_island_x -= 1;
     } 
-    if (s_island_x < -80) {
-        s_island_x = SCREEN_W + 150 + (rand() % 100);
+    if (s_island_x < SX(-80)) {
+        s_island_x = SCREEN_W + SX(150) + (rand() % SX(100));
     }
-    if (s_lighthouse_island_x < -100) {
-        s_lighthouse_island_x = SCREEN_W + 180 + (rand() % 100);
+    if (s_lighthouse_island_x < SX(-100)) {
+        s_lighthouse_island_x = SCREEN_W + SX(180) + (rand() % SX(100));
     }
 
     // Obstacle Logic
     s_obstacle_speed = 4 + (s_score / 4);
     if (s_obstacle_speed > 9) s_obstacle_speed = 9;
+    
+    s_water_distance += s_obstacle_speed;
 
+    int old_obs_x = s_obstacle_x;
     s_obstacle_x -= s_obstacle_speed; 
-    if (s_obstacle_x < -40) {
-        s_obstacle_x = SCREEN_W + 20;
-        s_obstacle_gap_y = (rand() % 80) + (SCREEN_H / 2 - 40);
+    
+    // Near miss detection when crossing boat
+    if (old_obs_x >= s_boat_x && s_obstacle_x < s_boat_x) {
+        int dist = abs(s_boat_y - s_obstacle_gap_y);
+        int col_hy = SY(25);
+        if (dist >= col_hy && dist < col_hy + SY(15)) {
+            // Near miss!
+            s_sun_cool_timer = 45; // 1.5 seconds at 30 FPS
+        }
+    }
+    
+    if (s_obstacle_x < SX(-40)) {
+        s_obstacle_x = SCREEN_W + SX(20);
+        s_obstacle_gap_y = (rand() % SY(80)) + (SCREEN_H / 2 - SY(40));
         s_score++;
         vibes_short_pulse();
         save_high_score();
 
         if ((rand() % 100) < 35 && !s_shield_active) {
             s_powerup_active = true;
-            s_powerup_x = s_obstacle_x + 10;
+            s_powerup_x = s_obstacle_x + SX(10);
             s_powerup_y = s_obstacle_gap_y;
         }
     }
@@ -286,7 +398,8 @@ static void game_loop(void *data) {
         s_powerup_x -= s_obstacle_speed;
         int pdx = s_powerup_x - s_boat_x;
         int pdy = s_powerup_y - s_boat_y;
-        if (pdx * pdx + pdy * pdy < 22 * 22) {
+        int pickup_r = SX(22);
+        if (pdx * pdx + pdy * pdy < pickup_r * pickup_r) {
             s_powerup_active = false;
             s_shield_active = true;
             s_shield_timer = 240;
@@ -300,13 +413,18 @@ static void game_loop(void *data) {
             s_shield_active = false;
         }
     }
+    if (s_sun_cool_timer > 0) {
+        s_sun_cool_timer--;
+    }
 
     // Collision Check
-    if (s_obstacle_x < s_boat_x + 15 && s_obstacle_x > s_boat_x - 15) {
-        if (s_boat_y < s_obstacle_gap_y - 25 || s_boat_y > s_obstacle_gap_y + 25) {
+    int col_hx = SX(15);
+    int col_hy = SY(25);
+    if (s_obstacle_x < s_boat_x + col_hx && s_obstacle_x > s_boat_x - col_hx) {
+        if (s_boat_y < s_obstacle_gap_y - col_hy || s_boat_y > s_obstacle_gap_y + col_hy) {
             if (s_shield_active) {
                 s_shield_active = false;
-                s_obstacle_x = -50;
+                s_obstacle_x = SX(-50);
                 vibes_short_pulse();
             } else {
                 s_state = GAME_STATE_GAME_OVER;
@@ -320,189 +438,122 @@ static void game_loop(void *data) {
     s_timer = app_timer_register(1000 / FPS, game_loop, NULL);
 }
 
-static void draw_sun_sprite(GContext *ctx, int x, int y) {
-    graphics_context_set_stroke_width(ctx, 2);
-    graphics_context_set_stroke_color(ctx, GColorBlack);
-    graphics_draw_line(ctx, GPoint(x + 20, y + 2), GPoint(x + 20, y + 38));
-    graphics_draw_line(ctx, GPoint(x + 2, y + 20), GPoint(x + 38, y + 20));
-    graphics_draw_line(ctx, GPoint(x + 7, y + 7), GPoint(x + 33, y + 33));
-    graphics_draw_line(ctx, GPoint(x + 7, y + 33), GPoint(x + 33, y + 7));
-    
-    // Use filled circles for a perfectly even border instead of relying on stroke width
-    graphics_context_set_fill_color(ctx, GColorBlack);
-    graphics_fill_circle(ctx, GPoint(x + 20, y + 20), 12);
-    
-    graphics_context_set_fill_color(ctx, GColorYellow);
-    graphics_fill_circle(ctx, GPoint(x + 20, y + 20), 10);
-}
-
-static void draw_cloud_sprite(GContext *ctx, int x, int y) {
-    graphics_context_set_fill_color(ctx, GColorWhite);
-    graphics_context_set_stroke_color(ctx, GColorBlack);
-    graphics_context_set_stroke_width(ctx, 2);
-    
-    graphics_draw_circle(ctx, GPoint(x + 10, y + 20), 8);
-    graphics_draw_circle(ctx, GPoint(x + 20, y + 13), 10);
-    graphics_draw_circle(ctx, GPoint(x + 33, y + 17), 9);
-    graphics_draw_circle(ctx, GPoint(x + 43, y + 23), 6);
-    
-    graphics_context_set_stroke_width(ctx, 1);
-    graphics_fill_circle(ctx, GPoint(x + 10, y + 20), 7);
-    graphics_fill_circle(ctx, GPoint(x + 20, y + 13), 9);
-    graphics_fill_circle(ctx, GPoint(x + 33, y + 17), 8);
-    graphics_fill_circle(ctx, GPoint(x + 43, y + 23), 5);
-    
-    graphics_fill_rect(ctx, GRect(x + 10, y + 17, 33, 11), 0, GCornerNone);
-}
-
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_fill_color(ctx, GColorPictonBlue);
     graphics_fill_rect(ctx, GRect(0, 0, SCREEN_W, SCREEN_H), 0, GCornerNone);
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
     // Living Sky Layer
-    int sun_x = 145;
-    int sun_y = 10;
-    draw_sun_sprite(ctx, sun_x, sun_y);
-
+    int sun_x = SX(145);
+    int sun_y = SY(10);
+    
     int dist_to_hazard = s_obstacle_x > s_boat_x ? s_obstacle_x - s_boat_x : s_boat_x - s_obstacle_x;
-    bool is_panicking = (dist_to_hazard < 50 && s_state == GAME_STATE_PLAYING);
-    bool is_blinking = (s_tick % 120 < 6); 
-
-    int cx = sun_x + 20; 
-    int cy = sun_y + 20;
-
-
-
-    graphics_context_set_stroke_color(ctx, GColorBlack);
-    graphics_context_set_fill_color(ctx, GColorBlack);
-    graphics_context_set_stroke_width(ctx, 2);
-
-    if (is_blinking && !is_panicking) {
-        graphics_draw_line(ctx, GPoint(cx - 7, cy - 4), GPoint(cx - 3, cy - 4));
-        graphics_draw_line(ctx, GPoint(cx + 3, cy - 4), GPoint(cx + 7, cy - 4));
-    } else {
-        int eye_y = is_panicking ? cy - 6 : cy - 4; 
-        int eye_size = is_panicking ? 3 : 2; 
-        graphics_fill_circle(ctx, GPoint(cx - 5, eye_y), eye_size);
-        graphics_fill_circle(ctx, GPoint(cx + 5, eye_y), eye_size);
+    bool is_panicking = (dist_to_hazard < SX(50) && (s_state == GAME_STATE_PLAYING || s_state == GAME_STATE_COUNTDOWN));
+    
+    GBitmap *sun_bmp = s_bmp_sun_normal;
+    if (s_sun_cool_timer > 0) {
+        sun_bmp = s_bmp_sun_cool;
+    } else if (is_panicking) {
+        sun_bmp = s_bmp_sun_surprised;
     }
-
-    if (is_panicking) {
-        graphics_fill_circle(ctx, GPoint(cx, cy + 6), 3);
-    } else {
-        graphics_draw_line(ctx, GPoint(cx - 6, cy + 3), GPoint(cx, cy + 6));
-        graphics_draw_line(ctx, GPoint(cx, cy + 6), GPoint(cx + 6, cy + 3));
-    }
+    GRect sun_b = gbitmap_get_bounds(sun_bmp);
+    graphics_draw_bitmap_in_rect(ctx, sun_bmp, GRect(sun_x, sun_y, sun_b.size.w, sun_b.size.h));
 
     // Clouds Parallax
-    int c1_pop = abs((sin_lookup((s_tick * 250) % TRIG_MAX_ANGLE) * 5) / TRIG_MAX_RATIO);
-    draw_cloud_sprite(ctx, s_cloud1_x, 25 - c1_pop);
+    int c1_pop = abs((sin_lookup((s_tick * 250) % TRIG_MAX_ANGLE) * SY(5)) / TRIG_MAX_RATIO);
+    GRect c1_b = gbitmap_get_bounds(s_bmp_cloud_double);
+    graphics_draw_bitmap_in_rect(ctx, s_bmp_cloud_double, GRect(s_cloud1_x, SY(25) - c1_pop, c1_b.size.w, c1_b.size.h));
     
-    int c2_pop = abs((sin_lookup(((s_tick + 60) * 300) % TRIG_MAX_ANGLE) * 4) / TRIG_MAX_RATIO);
-    draw_cloud_sprite(ctx, s_cloud2_x, 45 - c2_pop);
+    int c2_pop = abs((sin_lookup(((s_tick + 60) * 300) % TRIG_MAX_ANGLE) * SY(4)) / TRIG_MAX_RATIO);
+    GRect c2_b = gbitmap_get_bounds(s_bmp_cloud_single);
+    graphics_draw_bitmap_in_rect(ctx, s_bmp_cloud_single, GRect(s_cloud2_x, SY(45) - c2_pop, c2_b.size.w, c2_b.size.h));
+
+    // --- Horizon Calculation (Static Y, but tilted) ---
+    int bg_angle = (s_water_angle * 7) / 10;
+    int static_horizon_y = (SCREEN_H / 2) - SY(25);
 
     // --- Lighthouse Island Layer ---
-    int bg_angle = (s_water_angle * 7) / 10;
-    int lh_horizon_y = (s_water_base_y - 12) + ((s_lighthouse_island_x + 15 - (SCREEN_W / 2)) * bg_angle) / 100;
+    int lh_off = SX(15);
+    int lh_horizon_y = static_horizon_y + ((s_lighthouse_island_x + lh_off - (SCREEN_W / 2)) * bg_angle) / 100;
     
-    // Draw Natural Island Hill
-    graphics_context_set_fill_color(ctx, GColorDarkGreen);
-    graphics_fill_circle(ctx, GPoint(s_lighthouse_island_x + 15, lh_horizon_y + 2), 22);
+    // Draw Rocky Island Base
+    int base_x = s_lighthouse_island_x + lh_off;
+    graphics_context_set_fill_color(ctx, GColorDarkGray);
     
-    // Draw Lighthouse Structure
-    int lh_base_x = s_lighthouse_island_x + 15;
-    int lh_base_y = lh_horizon_y - 4;
+    GPoint rock_points[] = {
+        GPoint(base_x - SX(60), SCREEN_H),
+        GPoint(base_x - SX(30), lh_horizon_y + SY(5)),
+        GPoint(base_x - SX(20), lh_horizon_y - SY(8)),
+        GPoint(base_x - SX(10), lh_horizon_y - SY(4)),
+        GPoint(base_x + SX(5),  lh_horizon_y - SY(12)),
+        GPoint(base_x + SX(20), lh_horizon_y - SY(5)),
+        GPoint(base_x + SX(35), lh_horizon_y + SY(10)),
+        GPoint(base_x + SX(65), SCREEN_H)
+    };
+    GPathInfo rock_info = { .num_points = 8, .points = rock_points };
+    GPath *rock_path = gpath_create(&rock_info);
+    gpath_draw_filled(ctx, rock_path);
     
-    graphics_context_set_fill_color(ctx, GColorWhite);
-    graphics_fill_rect(ctx, GRect(lh_base_x - 4, lh_base_y - 32, 8, 32), 0, GCornerNone);
-    
-    // Red stripes on lighthouse
-    graphics_context_set_fill_color(ctx, GColorRed);
-    graphics_fill_rect(ctx, GRect(lh_base_x - 4, lh_base_y - 24, 8, 6), 0, GCornerNone);
-    graphics_fill_rect(ctx, GRect(lh_base_x - 4, lh_base_y - 10, 8, 6), 0, GCornerNone);
-
-    // Lighthouse Top Lamp House
-    graphics_context_set_fill_color(ctx, GColorBlack);
-    graphics_fill_rect(ctx, GRect(lh_base_x - 5, lh_base_y - 38, 10, 6), 1, GCornersAll);
-
-    // --- Volumetric Dual-Beam Sweeping Light Cones (Uniform Proportional 3D Perspective) ---
-    int lamp_x = lh_base_x;
-    int lamp_y = lh_base_y - 35;
-
-    int angle1 = (s_tick * 80) % TRIG_MAX_ANGLE;
-    int angle2 = (angle1 + (TRIG_MAX_ANGLE / 2)) % TRIG_MAX_ANGLE;
-
-    for (int i = 0; i < 2; i++) {
-        int cur_angle = (i == 0) ? angle1 : angle2;
-        int sin_v = sin_lookup(cur_angle);
-        int cos_v = cos_lookup(cur_angle); // Depth factor (-TRIG_MAX_RATIO to TRIG_MAX_RATIO)
-
-        // Unified length scaling based on depth (cos_v)
-        // Foreground: ~65 length, Backside: ~35 length
-        int length = 50 + (cos_v * 18) / TRIG_MAX_RATIO;
-        int tip_x = lamp_x + (sin_v * length) / TRIG_MAX_RATIO;
-        
-        // Proportional vertical drop to keep the exact same cone angle on both sides
-        int tip_y = lamp_y + (length * 26) / 50; 
-        int half_w = (length * 16) / 50;
-        int core_w = (length * 5) / 50;
-
-        bool is_backside = (cos_v < 0);
-        GColor beam_color = is_backside ? GColorPastelYellow : GColorYellow;
-
-        // 1. Scattered Dim Outer Rays
-        graphics_context_set_stroke_color(ctx, is_backside ? GColorLightGray : GColorPastelYellow);
-        graphics_context_set_stroke_width(ctx, 1);
-        for (int r = -half_w - 5; r <= half_w + 5; r += 5) {
-            if (abs(r) < core_w) continue;
-            graphics_draw_line(ctx, GPoint(lamp_x, lamp_y), GPoint(tip_x + r, tip_y + (abs(r) / 4)));
-        }
-
-        // 2. Mid Beam Wedge
-        GPoint beam_points[] = {
-            GPoint(lamp_x, lamp_y),
-            GPoint(tip_x - half_w, tip_y),
-            GPoint(tip_x + half_w, tip_y)
-        };
-        GPathInfo beam_info = { .num_points = 3, .points = beam_points };
-        GPath *beam_path = gpath_create(&beam_info);
-        graphics_context_set_fill_color(ctx, beam_color);
-        gpath_draw_filled(ctx, beam_path);
-        gpath_destroy(beam_path);
-
-        // 3. Inner Core Beam
-        GPoint core_points[] = {
-            GPoint(lamp_x, lamp_y),
-            GPoint(tip_x - core_w, tip_y - 2),
-            GPoint(tip_x + core_w, tip_y - 2)
-        };
-        GPathInfo core_info = { .num_points = 3, .points = core_points };
-        GPath *core_path = gpath_create(&core_info);
-        graphics_context_set_fill_color(ctx, is_backside ? GColorYellow : GColorWhite);
-        gpath_draw_filled(ctx, core_path);
-        gpath_destroy(core_path);
+    graphics_context_set_stroke_color(ctx, GColorBlack);
+    graphics_context_set_stroke_width(ctx, 2);
+    for (int i = 0; i < 7; i++) {
+        graphics_draw_line(ctx, rock_points[i], rock_points[i+1]);
     }
-
-    // Ultra-bright light source bulb center
-    graphics_context_set_fill_color(ctx, GColorWhite);
-    graphics_fill_circle(ctx, GPoint(lamp_x, lamp_y), 2);
+    
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    graphics_fill_rect(ctx, GRect(base_x - SX(25), lh_horizon_y + SY(15), SX(5), SY(2)), 0, GCornerNone);
+    graphics_fill_rect(ctx, GRect(base_x + SX(10), lh_horizon_y + SY(25), SX(4), SY(3)), 0, GCornerNone);
+    
+    gpath_destroy(rock_path);
+    
+    // Draw Lighthouse Bitmap
+    GRect lh_b = gbitmap_get_bounds(s_bmp_island_lighthouse);
+    graphics_draw_bitmap_in_rect(ctx, s_bmp_island_lighthouse, GRect(base_x - lh_b.size.w/2, lh_horizon_y - lh_b.size.h + SY(5), lh_b.size.w, lh_b.size.h));
 
     // --- Standard Island Layer ---
-    GRect island_b = gbitmap_get_bounds(s_island_bitmap);
-    int island_horizon_y = (s_water_base_y - 12) + ((s_island_x - (SCREEN_W / 2)) * bg_angle) / 100;
-    graphics_draw_bitmap_in_rect(ctx, s_island_bitmap, GRect(s_island_x, island_horizon_y - island_b.size.h + 12, island_b.size.w, island_b.size.h));
+    GRect island_b = gbitmap_get_bounds(s_bmp_island_coconut);
+    int island_horizon_y = static_horizon_y + ((s_island_x - (SCREEN_W / 2)) * bg_angle) / 100;
+    
+    // Draw dune-shaped base below the island
+    int island_bottom_y = island_horizon_y + SY(10);
+    int base_top_l = s_island_x + SX(6);
+    int base_top_r = s_island_x + island_b.size.w - SX(10);
+    
+    graphics_context_set_fill_color(ctx, GColorChromeYellow);
+    GPoint dune_points[] = {
+        GPoint(base_top_l - SX(35), SCREEN_H),
+        GPoint(base_top_l, island_bottom_y),
+        GPoint(base_top_r, island_bottom_y),
+        GPoint(base_top_r + SX(45), SCREEN_H)
+    };
+    GPathInfo dune_info = { .num_points = 4, .points = dune_points };
+    GPath *dune_path = gpath_create(&dune_info);
+    gpath_draw_filled(ctx, dune_path);
+    
+    graphics_context_set_stroke_color(ctx, GColorBlack);
+    graphics_context_set_stroke_width(ctx, 2);
+    graphics_draw_line(ctx, dune_points[0], dune_points[1]);
+    graphics_draw_line(ctx, dune_points[2], dune_points[3]);
+    
+    graphics_context_set_fill_color(ctx, GColorWindsorTan);
+    graphics_fill_rect(ctx, GRect(base_top_l - SX(5), island_bottom_y + SY(15), SX(4), SY(2)), 0, GCornerNone);
+    graphics_fill_rect(ctx, GRect(base_top_r - SX(20), island_bottom_y + SY(25), SX(6), SY(2)), 0, GCornerNone);
+    graphics_fill_rect(ctx, GRect(base_top_l + SX(15), island_bottom_y + SY(10), SX(3), SY(2)), 0, GCornerNone);
+
+    gpath_destroy(dune_path);
+
+    graphics_draw_bitmap_in_rect(ctx, s_bmp_island_coconut, GRect(s_island_x, island_horizon_y - island_b.size.h + SY(12), island_b.size.w, island_b.size.h));
 
     // --- Background Water Layer (3D Depth) ---
     GPoint bg_wave_points[NUM_WAVE_POINTS + 3];
     int step_x = SCREEN_W / (NUM_WAVE_POINTS - 1);
-    int bg_base_y = s_water_base_y - 12;
+    int bg_base_y = s_water_base_y - SY(12);
 
     for (int i = 0; i < NUM_WAVE_POINTS; i++) {
         int px = i * step_x;
         int tilt_offset = ((px - (SCREEN_W / 2)) * bg_angle) / 100;
-        int wave_angle = (s_wave_phase + 8000 + (px * 400)) % TRIG_MAX_ANGLE; 
-        int wave_height = (sin_lookup(wave_angle) * 3) / TRIG_MAX_RATIO; 
+        int wave_angle = (s_wave_phase + (px * 300) + 1000) % TRIG_MAX_ANGLE;
+        int wave_height = (sin_lookup(wave_angle) * SY(3)) / TRIG_MAX_RATIO;
         bg_wave_points[i] = GPoint(px, bg_base_y + tilt_offset + wave_height);
     }
     bg_wave_points[NUM_WAVE_POINTS]     = GPoint(SCREEN_W, SCREEN_H);
@@ -537,15 +588,19 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     // Water Textures
     graphics_context_set_stroke_color(ctx, GColorCeleste); 
     graphics_context_set_stroke_width(ctx, 1);
+    int tex_gap = SY(25);
+    int tex_seg = SX(12);
+    int tex_sp = SX(40);
     for (int row = 0; row < 5; row++) {
-        int y_base = s_water_base_y + 25 + (row * 25);
-        int offset_x = (s_wave_phase / 300 + row * 15) % 40; 
+        int y_base = s_water_base_y + tex_gap + (row * tex_gap);
+        // Subtract distance to move left, wrap around tex_sp
+        int offset_x = tex_sp - ((s_water_distance + row * 15) % tex_sp); 
         
-        for (int x = -40; x < SCREEN_W; x += 40) {
+        for (int x = -tex_sp; x < SCREEN_W; x += tex_sp) {
             int px = x + offset_x;
             int py = y_base + ((px - (SCREEN_W / 2)) * s_water_angle) / 100; 
             if (px > 0 && px < SCREEN_W && py < SCREEN_H) {
-                graphics_draw_line(ctx, GPoint(px, py), GPoint(px + 12, py));
+                graphics_draw_line(ctx, GPoint(px, py), GPoint(px + tex_seg, py));
             }
         }
     }
@@ -559,28 +614,44 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     gpath_destroy(water_path);
 
     // Obstacles
-    GRect anchor_b = gbitmap_get_bounds(s_anchor_bitmap);
-    GRect mine_b = gbitmap_get_bounds(s_mine_bitmap);
-    graphics_context_set_stroke_width(ctx, 2);
+    int obs_cx = SX(10);
+    int obs_gap = SY(40);
+    int chain_seg = SY(10);
     
-    for (int y = 0; y < s_obstacle_gap_y - 30; y += 12) {
-        graphics_draw_line(ctx, GPoint(s_obstacle_x + 10, y), GPoint(s_obstacle_x + 10, y + 6));
-    }
-    graphics_draw_bitmap_in_rect(ctx, s_anchor_bitmap, GRect(s_obstacle_x + 10 - anchor_b.size.w/2, s_obstacle_gap_y - 30 - anchor_b.size.h, anchor_b.size.w, anchor_b.size.h));
+    // Draw chain base lines
+    graphics_context_set_stroke_width(ctx, 4);
+    graphics_context_set_stroke_color(ctx, GColorDarkGray);
+    graphics_draw_line(ctx, GPoint(s_obstacle_x + obs_cx, 0), GPoint(s_obstacle_x + obs_cx, s_obstacle_gap_y - obs_gap));
+    graphics_draw_line(ctx, GPoint(s_obstacle_x + obs_cx, s_obstacle_gap_y + obs_gap), GPoint(s_obstacle_x + obs_cx, SCREEN_H));
 
-    for (int y = s_obstacle_gap_y + 30; y < SCREEN_H; y += 12) {
-        graphics_draw_line(ctx, GPoint(s_obstacle_x + 10, y), GPoint(s_obstacle_x + 10, y + 6));
+    // Draw chain links
+    graphics_context_set_stroke_color(ctx, GColorBlack);
+    graphics_context_set_stroke_width(ctx, 2);
+    for (int y = 0; y < s_obstacle_gap_y - obs_gap; y += chain_seg) {
+        graphics_draw_circle(ctx, GPoint(s_obstacle_x + obs_cx, y), SX(3));
     }
-    graphics_draw_bitmap_in_rect(ctx, s_mine_bitmap, GRect(s_obstacle_x + 10 - mine_b.size.w/2, s_obstacle_gap_y + 30, mine_b.size.w, mine_b.size.h));
+    for (int y = s_obstacle_gap_y + obs_gap; y < SCREEN_H; y += chain_seg) {
+        graphics_draw_circle(ctx, GPoint(s_obstacle_x + obs_cx, y), SX(3));
+    }
+
+    // Draw Anchor (Top)
+    GRect anchor_b = gbitmap_get_bounds(s_bmp_anchor);
+    graphics_draw_bitmap_in_rect(ctx, s_bmp_anchor, GRect(s_obstacle_x + obs_cx - anchor_b.size.w/2, s_obstacle_gap_y - obs_gap - anchor_b.size.h, anchor_b.size.w, anchor_b.size.h));
+
+    // Draw Mine (Bottom)
+    GRect mine_b = gbitmap_get_bounds(s_bmp_mine);
+    graphics_draw_bitmap_in_rect(ctx, s_bmp_mine, GRect(s_obstacle_x + obs_cx - mine_b.size.w/2, s_obstacle_gap_y + obs_gap, mine_b.size.w, mine_b.size.h));
+
 
     // Shield Power-Up
     if (s_powerup_active) {
-        int bob_y = s_powerup_y + (sin_lookup((s_tick * 800) % TRIG_MAX_ANGLE) * 4) / TRIG_MAX_RATIO;
+        int bob_y = s_powerup_y + (sin_lookup((s_tick * 800) % TRIG_MAX_ANGLE) * SY(4)) / TRIG_MAX_RATIO;
+        int pu_r = SX(7);
         graphics_context_set_fill_color(ctx, GColorCyan);
-        graphics_fill_circle(ctx, GPoint(s_powerup_x, bob_y), 7);
+        graphics_fill_circle(ctx, GPoint(s_powerup_x, bob_y), pu_r);
         graphics_context_set_stroke_color(ctx, GColorWhite);
         graphics_context_set_stroke_width(ctx, 1);
-        graphics_draw_circle(ctx, GPoint(s_powerup_x, bob_y), 7);
+        graphics_draw_circle(ctx, GPoint(s_powerup_x, bob_y), pu_r);
     }
 
     // Particles (Behind Boat)
@@ -588,10 +659,10 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         if (s_particles[i].life > 0) {
             if (s_particles[i].type == PARTICLE_SPLASH) {
                 graphics_context_set_fill_color(ctx, GColorWhite);
-                graphics_fill_circle(ctx, GPoint(s_particles[i].x, s_particles[i].y), 2);
+                graphics_fill_circle(ctx, GPoint(s_particles[i].x, s_particles[i].y), SX(2));
             } else if (s_particles[i].type == PARTICLE_SMOKE) {
                 graphics_context_set_fill_color(ctx, GColorDarkGray);
-                int radius = 1 + ((s_particles[i].max_life - s_particles[i].life) / 4);
+                int radius = SX(1 + ((s_particles[i].max_life - s_particles[i].life) / 4));
                 graphics_fill_circle(ctx, GPoint(s_particles[i].x, s_particles[i].y), radius);
             }
         }
@@ -601,25 +672,26 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     if (s_shield_active) {
         GColor shield_color = (s_shield_timer < 60 && (s_tick % 6 < 3)) ? GColorBrightGreen : GColorElectricBlue;
         graphics_context_set_stroke_color(ctx, shield_color);
-        graphics_context_set_stroke_width(ctx, 2);
-        int shield_r = 18 + (sin_lookup((s_tick * 600) % TRIG_MAX_ANGLE) * 2) / TRIG_MAX_RATIO;
-        graphics_draw_circle(ctx, GPoint(s_boat_x, s_boat_y - 6), shield_r);
+        graphics_context_set_stroke_width(ctx, 3);
+        int shield_r = SX(24) + (sin_lookup((s_tick * 600) % TRIG_MAX_ANGLE) * SX(2)) / TRIG_MAX_RATIO;
+        graphics_draw_circle(ctx, GPoint(s_boat_x, s_boat_y - SY(10)), shield_r);
     }
 
     // Boat Sprite
-    GRect boat_b = gbitmap_get_bounds(s_boat_bitmap);
-    graphics_draw_bitmap_in_rect(ctx, s_boat_bitmap, GRect(s_boat_x - boat_b.size.w / 2, s_boat_y - boat_b.size.h + 5, boat_b.size.w, boat_b.size.h));
+    GRect boat_b = gbitmap_get_bounds(s_bmp_boat);
+    graphics_draw_bitmap_in_rect(ctx, s_bmp_boat, GRect(s_boat_x - boat_b.size.w/2, s_boat_y - boat_b.size.h + SY(10), boat_b.size.w, boat_b.size.h));
 
     // Trajectory Dots (In front of boat)
     if (s_state == GAME_STATE_PLAYING) {
+        int dot_sp = SX(12);
         graphics_context_set_fill_color(ctx, GColorYellow);
         for (int i = 1; i <= 6; i++) {
-            int dot_x = s_boat_x + (i * 12);
+            int dot_x = s_boat_x + (i * dot_sp);
             if (dot_x < SCREEN_W) {
                 int tilt_offset = ((dot_x - (SCREEN_W / 2)) * s_water_angle) / 100;
                 int wave_angle = (s_wave_phase + (dot_x * 300)) % TRIG_MAX_ANGLE;
-                int wave_height = (sin_lookup(wave_angle) * 4) / TRIG_MAX_RATIO;
-                int dot_y = s_water_base_y + tilt_offset + wave_height - 3;
+                int wave_height = (sin_lookup(wave_angle) * SY(4)) / TRIG_MAX_RATIO;
+                int dot_y = s_water_base_y + tilt_offset + wave_height - SY(3);
                 
                 graphics_fill_circle(ctx, GPoint(dot_x, dot_y), 2);
             }
@@ -627,11 +699,28 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     }
 
     // Score Display
-    char score_buffer[16];
-    snprintf(score_buffer, sizeof(score_buffer), "%d", s_score);
+    char score_buffer[32];
+    snprintf(score_buffer, sizeof(score_buffer), "Score: %d", s_score);
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, score_buffer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD), 
-                       GRect(0, 10, SCREEN_W, 50), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+    graphics_draw_text(ctx, score_buffer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
+                       GRect(0, SCREEN_H - SY(30), SCREEN_W, SY(30)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+
+    // Menu Overlay
+    if (s_state == GAME_STATE_MENU) {
+        int box_m = SX(15);
+        int box_h = SY(100);
+        graphics_context_set_fill_color(ctx, GColorWhite);
+        graphics_fill_rect(ctx, GRect(box_m, SCREEN_H / 2 - box_h / 2, SCREEN_W - box_m * 2, box_h), 6, GCornersAll);
+        graphics_context_set_stroke_color(ctx, GColorBlack);
+        graphics_context_set_stroke_width(ctx, 2);
+        graphics_draw_rect(ctx, GRect(box_m, SCREEN_H / 2 - box_h / 2, SCREEN_W - box_m * 2, box_h));
+
+        char *menu_text = "POINT NEMO\n\nUP: Tilt\nDOWN: Buttons";
+        
+        graphics_context_set_text_color(ctx, GColorBlack);
+        graphics_draw_text(ctx, menu_text, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD), 
+                           GRect(box_m, SCREEN_H / 2 - box_h / 2 + SY(7), SCREEN_W - box_m * 2, box_h - SY(10)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+    }
 
     // Countdown Overlay
     if (s_state == GAME_STATE_COUNTDOWN) {
@@ -641,23 +730,25 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         
         graphics_context_set_text_color(ctx, GColorYellow);
         graphics_draw_text(ctx, count_buf, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD), 
-                           GRect(0, SCREEN_H / 2 - 40, SCREEN_W, 50), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+                           GRect(0, SCREEN_H / 2 - SY(40), SCREEN_W, SY(50)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 
     // Game Over Overlay
     if (s_state == GAME_STATE_GAME_OVER) {
+        int box_m = SX(15);
+        int box_h = SY(100);
         graphics_context_set_fill_color(ctx, GColorWhite);
-        graphics_fill_rect(ctx, GRect(15, SCREEN_H / 2 - 45, SCREEN_W - 30, 90), 6, GCornersAll);
+        graphics_fill_rect(ctx, GRect(box_m, SCREEN_H / 2 - box_h / 2, SCREEN_W - box_m * 2, box_h), 6, GCornersAll);
         graphics_context_set_stroke_color(ctx, GColorBlack);
         graphics_context_set_stroke_width(ctx, 2);
-        graphics_draw_rect(ctx, GRect(15, SCREEN_H / 2 - 45, SCREEN_W - 30, 90));
+        graphics_draw_rect(ctx, GRect(box_m, SCREEN_H / 2 - box_h / 2, SCREEN_W - box_m * 2, box_h));
 
         char over_buf[64];
-        snprintf(over_buf, sizeof(over_buf), "SUNK!\nScore: %d | Best: %d\nPress SELECT to retry", s_score, s_high_score);
+        snprintf(over_buf, sizeof(over_buf), "SUNK!\nScore: %d | Best: %d\nSELECT -> Menu", s_score, s_high_score);
         
         graphics_context_set_text_color(ctx, GColorBlack);
         graphics_draw_text(ctx, over_buf, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD), 
-                           GRect(15, SCREEN_H / 2 - 38, SCREEN_W - 30, 80), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+                           GRect(box_m, SCREEN_H / 2 - box_h / 2 + SY(7), SCREEN_W - box_m * 2, box_h - SY(10)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 }
 
@@ -665,12 +756,23 @@ static void main_window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window);
     GRect bounds = layer_get_bounds(window_layer);
 
-    load_high_score();
+    // Detect actual screen dimensions at runtime
+    SCREEN_W = bounds.size.w;
+    SCREEN_H = bounds.size.h;
 
-    s_boat_bitmap   = gbitmap_create_with_resource(RESOURCE_ID_BOAT);
-    s_anchor_bitmap = gbitmap_create_with_resource(RESOURCE_ID_ANCHOR);
-    s_mine_bitmap   = gbitmap_create_with_resource(RESOURCE_ID_MINE);
-    s_island_bitmap = gbitmap_create_with_resource(RESOURCE_ID_ISLAND);
+    load_high_score();
+    reset_game();
+
+    s_bmp_boat = gbitmap_create_with_resource(RESOURCE_ID_BOAT);
+    s_bmp_anchor = gbitmap_create_with_resource(RESOURCE_ID_ANCHOR);
+    s_bmp_mine = gbitmap_create_with_resource(RESOURCE_ID_MINE);
+    s_bmp_sun_normal = gbitmap_create_with_resource(RESOURCE_ID_SUN_NORMAL);
+    s_bmp_sun_cool = gbitmap_create_with_resource(RESOURCE_ID_SUN_COOL);
+    s_bmp_sun_surprised = gbitmap_create_with_resource(RESOURCE_ID_SUN_SURPRISED);
+    s_bmp_cloud_single = gbitmap_create_with_resource(RESOURCE_ID_CLOUD_SINGLE);
+    s_bmp_cloud_double = gbitmap_create_with_resource(RESOURCE_ID_CLOUD_DOUBLE);
+    s_bmp_island_coconut = gbitmap_create_with_resource(RESOURCE_ID_ISLAND_COCONUT);
+    s_bmp_island_lighthouse = gbitmap_create_with_resource(RESOURCE_ID_ISLAND_LIGHTHOUSE);
 
     s_canvas_layer = layer_create(bounds);
     layer_set_update_proc(s_canvas_layer, canvas_update_proc);
@@ -681,10 +783,17 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_unload(Window *window) {
-    gbitmap_destroy(s_boat_bitmap);
-    gbitmap_destroy(s_anchor_bitmap);
-    gbitmap_destroy(s_mine_bitmap);
-    gbitmap_destroy(s_island_bitmap);
+    gbitmap_destroy(s_bmp_boat);
+    gbitmap_destroy(s_bmp_anchor);
+    gbitmap_destroy(s_bmp_mine);
+    gbitmap_destroy(s_bmp_sun_normal);
+    gbitmap_destroy(s_bmp_sun_cool);
+    gbitmap_destroy(s_bmp_sun_surprised);
+    gbitmap_destroy(s_bmp_cloud_single);
+    gbitmap_destroy(s_bmp_cloud_double);
+    gbitmap_destroy(s_bmp_island_coconut);
+    gbitmap_destroy(s_bmp_island_lighthouse);
+
     layer_destroy(s_canvas_layer);
 }
 

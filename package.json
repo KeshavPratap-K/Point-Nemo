@@ -11,6 +11,7 @@
     "sdkVersion": "3",
     "enableMultiJS": false,
     "targetPlatforms": [
+      "basalt",
       "emery"
     ],
     "watchapp": {
@@ -35,18 +36,38 @@
         },
         {
           "type": "bitmap",
-          "name": "SUN",
-          "file": "images/sun.png"
+          "name": "SUN_NORMAL",
+          "file": "images/sun_normal.png"
         },
         {
           "type": "bitmap",
-          "name": "CLOUD",
-          "file": "images/cloud.png"
+          "name": "SUN_COOL",
+          "file": "images/sun_cool.png"
         },
         {
           "type": "bitmap",
-          "name": "ISLAND",
-          "file": "images/island.png"
+          "name": "SUN_SURPRISED",
+          "file": "images/sun_surprised.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "CLOUD_SINGLE",
+          "file": "images/cloud_single.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "CLOUD_DOUBLE",
+          "file": "images/cloud_double.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "ISLAND_COCONUT",
+          "file": "images/island_coconut.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "ISLAND_LIGHTHOUSE",
+          "file": "images/island_lighthouse.png"
         }
       ]
     }
