@@ -14,6 +14,7 @@ static const char *s_death_texts[NUM_DEATH_TEXTS] = {
     "SPLAT!"
 };
 static const char *s_hit_message = "";
+static int s_menu_selection = 0; // 0 = Tilt, 1 = Buttons
 
 void load_high_score(void) {
     if (persist_exists(PERSIST_KEY_HIGH_SCORE)) {
@@ -74,10 +75,8 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
 }
 
 static void up_down_handler(ClickRecognizerRef recognizer, void *context) {
-    if (s_state == GAME_STATE_MENU) {
-        s_control_mode = CONTROL_TILT;
-        reset_game();
-        s_state = GAME_STATE_COUNTDOWN;
+    if (s_state == GAME_STATE_MODE_SELECT) {
+        s_menu_selection = 0; // highlight Tilt
     } else if (s_state == GAME_STATE_PLAYING && s_control_mode == CONTROL_BUTTONS) {
         s_up_pressed = true;
     }
@@ -88,11 +87,8 @@ static void up_up_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void down_down_handler(ClickRecognizerRef recognizer, void *context) {
-    if (s_state == GAME_STATE_MENU) {
-        s_control_mode = CONTROL_BUTTONS;
-        s_button_angle = 0;
-        reset_game();
-        s_state = GAME_STATE_COUNTDOWN;
+    if (s_state == GAME_STATE_MODE_SELECT) {
+        s_menu_selection = 1; // highlight Buttons
     } else if (s_state == GAME_STATE_PLAYING && s_control_mode == CONTROL_BUTTONS) {
         s_down_pressed = true;
     }
@@ -103,7 +99,20 @@ static void down_up_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
-    if (s_state == GAME_STATE_GAME_OVER) {
+    if (s_state == GAME_STATE_MENU) {
+        s_state = GAME_STATE_MODE_SELECT;
+        s_menu_selection = 0;
+    } else if (s_state == GAME_STATE_MODE_SELECT) {
+        // Confirm the highlighted selection
+        if (s_menu_selection == 0) {
+            s_control_mode = CONTROL_TILT;
+        } else {
+            s_control_mode = CONTROL_BUTTONS;
+            s_button_angle = 0;
+        }
+        reset_game();
+        s_state = GAME_STATE_COUNTDOWN;
+    } else if (s_state == GAME_STATE_GAME_OVER) {
         s_state = GAME_STATE_MENU;
         s_timer = app_timer_register(1000 / FPS, game_loop, NULL);
     }
@@ -135,37 +144,39 @@ void game_loop(void *data) {
     s_tick++;
 
     int target_angle = 0;
-    if (s_control_mode == CONTROL_TILT) {
-        AccelData accel;
-        if (accel_service_peek(&accel) == 0) {
-            // Use vertical tilt (Y-axis) so it works while looking at the wrist
-            // Natural viewing angle is usually around Y = -600
-            int baseline_y = -600;
-            target_angle = (accel.y - baseline_y) / 15;
-            
-            // Clamp target_angle to prevent excessive rotation
-            if (target_angle > 60) target_angle = 60;
-            if (target_angle < -60) target_angle = -60;
-        }
-    } else {
-        if (s_up_pressed) {
-            s_button_angle -= 4;
-            if (s_button_angle < -60) s_button_angle = -60;
-        } else if (s_down_pressed) {
-            s_button_angle += 4;
-            if (s_button_angle > 60) s_button_angle = 60;
+    if (s_state != GAME_STATE_MENU && s_state != GAME_STATE_MODE_SELECT) {
+        if (s_control_mode == CONTROL_TILT) {
+            AccelData accel;
+            if (accel_service_peek(&accel) == 0) {
+                // Use vertical tilt (Y-axis) so it works while looking at the wrist
+                // Natural viewing angle is usually around Y = -600
+                int baseline_y = -600;
+                target_angle = (accel.y - baseline_y) / 15;
+                
+                // Clamp target_angle to prevent excessive rotation
+                if (target_angle > 60) target_angle = 60;
+                if (target_angle < -60) target_angle = -60;
+            }
         } else {
-            if (s_button_angle > 0) s_button_angle -= 4;
-            if (s_button_angle < 0) s_button_angle += 4;
-            if (abs(s_button_angle) < 4) s_button_angle = 0;
+            if (s_up_pressed) {
+                s_button_angle -= 4;
+                if (s_button_angle < -60) s_button_angle = -60;
+            } else if (s_down_pressed) {
+                s_button_angle += 4;
+                if (s_button_angle > 60) s_button_angle = 60;
+            } else {
+                if (s_button_angle > 0) s_button_angle -= 4;
+                if (s_button_angle < 0) s_button_angle += 4;
+                if (abs(s_button_angle) < 4) s_button_angle = 0;
+            }
+            target_angle = s_button_angle;
         }
-        target_angle = s_button_angle;
     }
     
     // Smooth angle interpolation
     s_water_angle = (s_water_angle * 3 + target_angle) / 4; 
 
-    if (s_state == GAME_STATE_MENU) {
+    if (s_state == GAME_STATE_MENU || s_state == GAME_STATE_MODE_SELECT) {
         s_water_angle = (s_water_angle * 3) / 4; // level out over time
         s_water_base_y = (SCREEN_H / 2) + (s_water_angle * SY(13)) / 10;
         s_wave_phase = (s_wave_phase + 1000) % TRIG_MAX_ANGLE;
@@ -655,24 +666,64 @@ void canvas_update_proc(Layer *layer, GContext *ctx) {
                            GRect(0, SCREEN_H - SY(30), SCREEN_W, SY(30)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 
-    // Menu Overlay
+    // Title Screen Overlay
     if (s_state == GAME_STATE_MENU) {
-        int box_m = SX(15);
-        int box_w = SCREEN_W - box_m * 2;
-        int box_h = SY(100);
-        int box_x = box_m;
-        int box_y = (SCREEN_H / 2) - (box_h / 2);
+        // "POINT NEMO" centered bold title
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "POINT NEMO", fonts_get_system_font(FONT_KEY_BITHAM_30_BLACK), 
+                           GRect(0, SCREEN_H / 2 - SY(65), SCREEN_W, SY(70)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
         
+        // "Press to Start" text below, with enough gap
+        graphics_context_set_text_color(ctx, GColorYellow);
+        graphics_draw_text(ctx, "Press to Start", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD), 
+                           GRect(0, SCREEN_H / 2 + SY(15), SCREEN_W, SY(25)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+    }
+    
+    // Mode Select Overlay
+    if (s_state == GAME_STATE_MODE_SELECT) {
+        // Heading
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "Controls", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
+                           GRect(0, SCREEN_H / 2 - SY(70), SCREEN_W, SY(30)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+        
+        // Centered wide buttons
+        int btn_w = SCREEN_W - SX(40);
+        int btn_h = SY(32);
+        int btn_x = (SCREEN_W - btn_w) / 2;
+        int btn_tilt_y = SCREEN_H / 2 - SY(34);
+        int btn_btns_y = SCREEN_H / 2 + SY(12);
+        
+        // Tilt button
+        bool tilt_sel = (s_menu_selection == 0);
         graphics_context_set_fill_color(ctx, GColorBlack);
-        graphics_fill_rect(ctx, GRect(box_x - 2, box_y - 2, box_w + 4, box_h + 4), 8, GCornersAll);
-        graphics_context_set_fill_color(ctx, GColorWhite);
-        graphics_fill_rect(ctx, GRect(box_x, box_y, box_w, box_h), 8, GCornersAll);
-
-        char *menu_text = "POINT NEMO\n\nUP: Tilt\nDOWN: Buttons";
+        graphics_fill_rect(ctx, GRect(btn_x - 2, btn_tilt_y - 2, btn_w + 4, btn_h + 4), 10, GCornersAll);
+        graphics_context_set_fill_color(ctx, tilt_sel ? GColorVividCerulean : GColorDarkGray);
+        graphics_fill_rect(ctx, GRect(btn_x, btn_tilt_y, btn_w, btn_h), 10, GCornersAll);
+        if (tilt_sel) {
+            // Highlight border
+            graphics_context_set_stroke_color(ctx, GColorWhite);
+            graphics_context_set_stroke_width(ctx, 3);
+            graphics_draw_round_rect(ctx, GRect(btn_x, btn_tilt_y, btn_w, btn_h), 10);
+        }
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "Tilt", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
+                           GRect(btn_x, btn_tilt_y + SY(2), btn_w, btn_h), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
         
-        graphics_context_set_text_color(ctx, GColorBlack);
-        graphics_draw_text(ctx, menu_text, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD), 
-                           GRect(box_m, SCREEN_H / 2 - box_h / 2 + SY(7), SCREEN_W - box_m * 2, box_h - SY(10)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+        // Buttons button
+        bool btns_sel = (s_menu_selection == 1);
+        graphics_context_set_fill_color(ctx, GColorBlack);
+        graphics_fill_rect(ctx, GRect(btn_x - 2, btn_btns_y - 2, btn_w + 4, btn_h + 4), 10, GCornersAll);
+        graphics_context_set_fill_color(ctx, btns_sel ? GColorOrange : GColorDarkGray);
+        graphics_fill_rect(ctx, GRect(btn_x, btn_btns_y, btn_w, btn_h), 10, GCornersAll);
+        if (btns_sel) {
+            // Highlight border
+            graphics_context_set_stroke_color(ctx, GColorWhite);
+            graphics_context_set_stroke_width(ctx, 3);
+            graphics_draw_round_rect(ctx, GRect(btn_x, btn_btns_y, btn_w, btn_h), 10);
+        }
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "Buttons", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), 
+                           GRect(btn_x, btn_btns_y + SY(2), btn_w, btn_h), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 
     // Countdown Overlay (Static text at top)

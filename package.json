@@ -71,7 +71,8 @@
         {
           "type": "bitmap",
           "name": "TOWER",
-          "file": "images/tower.png"
+          "file": "images/tower.png",
+          "menuIcon": true
         }
       ]
     }
