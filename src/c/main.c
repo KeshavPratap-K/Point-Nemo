@@ -25,7 +25,7 @@ static void main_window_load(Window *window) {
     s_bmp_cloud_double = gbitmap_create_with_resource(RESOURCE_ID_CLOUD_DOUBLE);
     s_bmp_island_coconut = gbitmap_create_with_resource(RESOURCE_ID_ISLAND_COCONUT);
     s_bmp_island_lighthouse = gbitmap_create_with_resource(RESOURCE_ID_ISLAND_LIGHTHOUSE);
-    s_bmp_tower = gbitmap_create_with_resource(RESOURCE_ID_TOWER);
+    s_bmp_buoy = gbitmap_create_with_resource(RESOURCE_ID_BUOY);
 
     s_canvas_layer = layer_create(bounds);
     layer_set_update_proc(s_canvas_layer, canvas_update_proc);
@@ -46,7 +46,7 @@ static void main_window_unload(Window *window) {
     gbitmap_destroy(s_bmp_cloud_double);
     gbitmap_destroy(s_bmp_island_coconut);
     gbitmap_destroy(s_bmp_island_lighthouse);
-    gbitmap_destroy(s_bmp_tower);
+    gbitmap_destroy(s_bmp_buoy);
 
     layer_destroy(s_canvas_layer);
 }

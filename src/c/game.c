@@ -53,6 +53,7 @@ void reset_game(void) {
     s_powerup_active = false;
     s_shield_active = false;
     s_shield_timer = 0;
+    s_sun_cool_timer = 0;
     s_sink_timer = 0;
     s_sink_angle = 0;
     s_sink_y_offset = 0;
@@ -210,14 +211,8 @@ void game_loop(void *data) {
         s_sink_angle += 3; // Boat tips over
         s_sink_y_offset += 2; // Boat sinks into water
         
-        // Screen shake only on initial impact (first 15 frames of 60)
-        if (s_sink_timer > 45) {
-            s_shake_offset_x = (rand() % 9) - 4;
-            s_shake_offset_y = (rand() % 9) - 4;
-        } else {
-            s_shake_offset_x = 0;
-            s_shake_offset_y = 0;
-        }
+        s_shake_offset_x = 0;
+        s_shake_offset_y = 0;
         
         // Keep waves moving
         s_wave_phase = (s_wave_phase + 1000) % TRIG_MAX_ANGLE;
@@ -296,22 +291,16 @@ void game_loop(void *data) {
     int old_obs_x = s_obstacle_x;
     s_obstacle_x -= s_obstacle_speed; 
     
-    // Near miss detection when crossing boat
+    // 1. Scoring & Sun Update (Triggers exactly when passing the boat)
     if (old_obs_x >= s_boat_x && s_obstacle_x < s_boat_x) {
-        int dist = abs(s_boat_y - s_obstacle_gap_y);
-        int col_hy = SY(25);
-        if (dist >= col_hy && dist < col_hy + SY(15)) {
-            // Near miss!
-            s_sun_cool_timer = 45; // 1.5 seconds at 30 FPS
-        }
+        s_score++;
+        s_sun_cool_timer = 15;
     }
     
+    // 2. Obstacle & Power-up Recycling (Triggers when off-screen)
     if (s_obstacle_x < SX(-40)) {
-        s_obstacle_x = SCREEN_W + SX(20);
+        s_obstacle_x = SCREEN_W + SX(70);
         s_obstacle_gap_y = (rand() % SY(80)) + (SCREEN_H / 2 - SY(40));
-        s_score++;
-        vibes_short_pulse();
-        save_high_score();
 
         // Ghost buoy: spawn when player reaches the score where they last died
         if (s_last_death_score >= 0 && s_score == s_last_death_score && !s_ghost_buoy_active) {
@@ -345,7 +334,6 @@ void game_loop(void *data) {
             s_powerup_active = false;
             s_shield_active = true;
             s_shield_timer = 240;
-            vibes_short_pulse();
         }
     }
 
@@ -367,7 +355,6 @@ void game_loop(void *data) {
             if (s_shield_active) {
                 s_shield_active = false;
                 s_obstacle_x = SX(-50);
-                vibes_short_pulse();
             } else {
                 // Start sinking animation
                 s_state = GAME_STATE_SINKING;
@@ -388,8 +375,6 @@ void game_loop(void *data) {
                     else if (rand() % 3 == 0) s_hit_message = "Watch out!";
                     else s_hit_message = "Too low!";
                 }
-                
-                vibes_double_pulse();
                 save_high_score();
                 // Save death score for ghost buoy
                 persist_write_int(PERSIST_KEY_LAST_SCORE, s_score);
@@ -419,14 +404,18 @@ void canvas_update_proc(Layer *layer, GContext *ctx) {
     bool is_panicking = (dist_to_hazard < SX(50) && (s_state == GAME_STATE_PLAYING || s_state == GAME_STATE_COUNTDOWN));
     
     GBitmap *sun_bmp = s_bmp_sun_normal;
-    if (s_sun_cool_timer > 0) {
+    
+    // Check death states first so it always overrides the cool timer
+    if (s_state == GAME_STATE_SINKING || s_state == GAME_STATE_GAME_OVER) {
+        sun_bmp = s_bmp_sun_surprised;
+    } else if (s_sun_cool_timer > 0) {
         sun_bmp = s_bmp_sun_cool;
     } else if (is_panicking) {
         sun_bmp = s_bmp_sun_surprised;
     }
+    
     GRect sun_b = gbitmap_get_bounds(sun_bmp);
     graphics_draw_bitmap_in_rect(ctx, sun_bmp, GRect(sun_x, sun_y, sun_b.size.w, sun_b.size.h));
-
     // Clouds Parallax
     int c1_pop = abs((sin_lookup((s_tick * 250) % TRIG_MAX_ANGLE) * SY(5)) / TRIG_MAX_RATIO);
     GRect c1_b = gbitmap_get_bounds(s_bmp_cloud_double);
@@ -485,14 +474,14 @@ void canvas_update_proc(Layer *layer, GContext *ctx) {
     int bg_base_y = s_water_base_y - SY(12);
 
     for (int i = 0; i < NUM_WAVE_POINTS; i++) {
-        int px = i * step_x;
+        int px = (i == 0) ? -1 : (i == NUM_WAVE_POINTS - 1) ? SCREEN_W : i * step_x;
         int tilt_offset = ((px - (SCREEN_W / 2)) * bg_angle) / 100;
         int wave_angle = (s_wave_phase + (px * 300) + 1000) % TRIG_MAX_ANGLE;
         int wave_height = (sin_lookup(wave_angle) * SY(3)) / TRIG_MAX_RATIO;
         bg_wave_points[i] = GPoint(px, bg_base_y + tilt_offset + wave_height);
     }
     bg_wave_points[NUM_WAVE_POINTS]     = GPoint(SCREEN_W, SCREEN_H);
-    bg_wave_points[NUM_WAVE_POINTS + 1] = GPoint(0, SCREEN_H);
+    bg_wave_points[NUM_WAVE_POINTS + 1] = GPoint(-1, SCREEN_H);
 
     GPathInfo bg_path_info = { .num_points = NUM_WAVE_POINTS + 2, .points = bg_wave_points };
     GPath *bg_water_path = gpath_create(&bg_path_info);
@@ -505,14 +494,14 @@ void canvas_update_proc(Layer *layer, GContext *ctx) {
     GPoint wave_points[NUM_WAVE_POINTS + 3];
 
     for (int i = 0; i < NUM_WAVE_POINTS; i++) {
-        int px = i * step_x;
+        int px = (i == 0) ? -1 : (i == NUM_WAVE_POINTS - 1) ? SCREEN_W : i * step_x;
         int tilt_offset = ((px - (SCREEN_W / 2)) * s_water_angle) / 100;
         int wave_angle = (s_wave_phase + (px * 300)) % TRIG_MAX_ANGLE;
         int wave_height = (sin_lookup(wave_angle) * 4) / TRIG_MAX_RATIO; 
         wave_points[i] = GPoint(px, s_water_base_y + tilt_offset + wave_height);
     }
     wave_points[NUM_WAVE_POINTS]     = GPoint(SCREEN_W, SCREEN_H);
-    wave_points[NUM_WAVE_POINTS + 1] = GPoint(0, SCREEN_H);
+    wave_points[NUM_WAVE_POINTS + 1] = GPoint(-1, SCREEN_H);
 
     GPathInfo path_info = { .num_points = NUM_WAVE_POINTS + 2, .points = wave_points };
     GPath *water_path = gpath_create(&path_info);
@@ -617,13 +606,22 @@ void canvas_update_proc(Layer *layer, GContext *ctx) {
         int bx = s_ghost_buoy_x;
         
         // Draw Tower Bitmap
-        GRect tower_b = gbitmap_get_bounds(s_bmp_tower);
-        graphics_draw_bitmap_in_rect(ctx, s_bmp_tower, GRect(bx - tower_b.size.w/2, buoy_y - tower_b.size.h + SY(5), tower_b.size.w, tower_b.size.h));
+        GRect tower_b = gbitmap_get_bounds(s_bmp_buoy);
+        graphics_draw_bitmap_in_rect(ctx, s_bmp_buoy, GRect(bx - tower_b.size.w/2, buoy_y - tower_b.size.h + SY(5), tower_b.size.w, tower_b.size.h));
         
-        // Label
-        graphics_context_set_text_color(ctx, GColorRed);
+        // Label Background
+        int label_w = SX(26);
+        int label_h = SY(16);
+        int label_x = bx - label_w / 2;
+        int label_y = buoy_y - tower_b.size.h - SY(12);
+        
+        graphics_context_set_fill_color(ctx, GColorWhite);
+        graphics_fill_rect(ctx, GRect(label_x, label_y, label_w, label_h), 4, GCornersAll);
+        
+        // Label Text
+        graphics_context_set_text_color(ctx, GColorBlack);
         graphics_draw_text(ctx, "RIP", fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                           GRect(bx - SX(15), buoy_y - tower_b.size.h - SY(10), SX(30), SY(14)), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+                           GRect(label_x, label_y - SY(2), label_w, label_h), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 
     // Boat Sprite (with sinking animation)
@@ -634,9 +632,17 @@ void canvas_update_proc(Layer *layer, GContext *ctx) {
     
     // Funny text above boat during sinking
     if (s_state == GAME_STATE_SINKING && s_sink_timer > 20) {
-        graphics_context_set_text_color(ctx, GColorSunsetOrange);
-        graphics_draw_text(ctx, s_hit_message, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                           GRect(draw_boat_x - SX(25), draw_boat_y - SY(25), boat_b.size.w + SX(50), SY(20)), 
+        int hit_w = SX(120);
+        int hit_h = SY(22);
+        int hit_x = draw_boat_x + boat_b.size.w/2 - hit_w/2;
+        int hit_y = draw_boat_y - SY(28);
+        
+        graphics_context_set_fill_color(ctx, GColorWhite);
+        graphics_fill_rect(ctx, GRect(hit_x, hit_y, hit_w, hit_h), 4, GCornersAll);
+        
+        graphics_context_set_text_color(ctx, GColorBlack);
+        graphics_draw_text(ctx, s_hit_message, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                           GRect(hit_x, hit_y + SY(1), hit_w, hit_h), 
                            GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 

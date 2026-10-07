@@ -73,6 +73,11 @@
           "name": "TOWER",
           "file": "images/tower.png",
           "menuIcon": true
+        },
+        {
+          "type": "bitmap",
+          "name": "BUOY",
+          "file": "images/buoy.png"
         }
       ]
     }

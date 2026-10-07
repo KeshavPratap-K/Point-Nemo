@@ -50,7 +50,7 @@ extern int s_ghost_buoy_x;
 extern bool s_ghost_buoy_active;
 
 extern GBitmap *s_bmp_boat, *s_bmp_anchor, *s_bmp_mine, *s_bmp_sun_normal, *s_bmp_sun_cool, *s_bmp_sun_surprised;
-extern GBitmap *s_bmp_cloud_single, *s_bmp_cloud_double, *s_bmp_island_coconut, *s_bmp_island_lighthouse, *s_bmp_tower;
+extern GBitmap *s_bmp_cloud_single, *s_bmp_cloud_double, *s_bmp_island_coconut, *s_bmp_island_lighthouse, *s_bmp_buoy;
 
 extern AppTimer *s_timer;
 extern Layer *s_canvas_layer;

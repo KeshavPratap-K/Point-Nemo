@@ -29,7 +29,7 @@ int s_ghost_buoy_x = -100;
 bool s_ghost_buoy_active = false;
 
 GBitmap *s_bmp_boat, *s_bmp_anchor, *s_bmp_mine, *s_bmp_sun_normal, *s_bmp_sun_cool, *s_bmp_sun_surprised;
-GBitmap *s_bmp_cloud_single, *s_bmp_cloud_double, *s_bmp_island_coconut, *s_bmp_island_lighthouse, *s_bmp_tower;
+GBitmap *s_bmp_cloud_single, *s_bmp_cloud_double, *s_bmp_island_coconut, *s_bmp_island_lighthouse, *s_bmp_buoy;
 
 AppTimer *s_timer;
 Layer *s_canvas_layer;
